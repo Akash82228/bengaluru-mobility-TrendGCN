@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from dataloader import normalize_dataset, Add_Window_Horizon
+from utils.norm import StandardScaler, MinMax01Scaler, MinMax11Scaler, NScaler
 from model.generator import DAAGCN as Generator
 from utils.util import get_device
 
@@ -45,7 +45,7 @@ CFG = SimpleNamespace(
     num_nodes=103,
     lag=5,
     horizon=5,
-    normalizer="std",
+    normalizer="std",  # matches training config
     column_wise=False,
     default_graph=True,
     input_dim=1,
@@ -56,6 +56,7 @@ CFG = SimpleNamespace(
     cheb_k=2,
     seed=10,
     gpu_id=0,
+    train_npz_path="dataset/PEMS04/PEMS04.npz",
 )
 
 
@@ -117,6 +118,45 @@ def map_cameras_to_indices(master_txt: str, cams: List[str]) -> List[int]:
     return idxs
 
 
+# ---- Training scaler (use full training stats, not per-window) ---- #
+def load_training_scaler(normalizer: str, column_wise: bool, sub_idx: Optional[List[int]]):
+    data = np.load(CFG.train_npz_path)["data"][:, :, 0]  # [T, N]
+    if sub_idx is not None:
+        data = data[:, sub_idx]
+    if data.ndim == 1:
+        data = data[:, None]
+
+    if normalizer in ["std", "zscore", "z-score"]:
+        if column_wise:
+            mean = data.mean(axis=0, keepdims=True)
+            std = data.std(axis=0, keepdims=True)
+        else:
+            mean = data.mean()
+            std = data.std()
+        scaler = StandardScaler(mean, std)
+    elif normalizer == "max01":
+        if column_wise:
+            minimum = data.min(axis=0, keepdims=True)
+            maximum = data.max(axis=0, keepdims=True)
+        else:
+            minimum = data.min()
+            maximum = data.max()
+        scaler = MinMax01Scaler(minimum, maximum)
+    elif normalizer == "max11":
+        if column_wise:
+            minimum = data.min(axis=0, keepdims=True)
+            maximum = data.max(axis=0, keepdims=True)
+        else:
+            minimum = data.min()
+            maximum = data.max()
+        scaler = MinMax11Scaler(minimum, maximum)
+    elif normalizer == "None":
+        scaler = NScaler()
+    else:
+        raise ValueError(f"Unsupported normalizer {normalizer}")
+    return scaler
+
+
 # ---- Model prep ---- #
 def load_generator(args, state_dict, sub_idx: Optional[List[int]], device):
     gen = Generator(args).to(device)
@@ -153,10 +193,11 @@ def run_inference(
     sub_idx = map_cameras_to_indices(node_list_txt_path, cams_in_file)
     args.num_nodes = len(sub_idx)
 
-    # normalize using provided window (same scheme as training config)
-    normed, scaler = normalize_dataset(raw, args.normalizer, args.column_wise)
-    # build windows (will yield X shape [1, lag, N, 1], Y shape [1, horizon, N, 1])
-    X, _ = Add_Window_Horizon(normed, window=args.lag, horizon=args.horizon, single=False)
+    # use training-data scaler to match model expectations
+    scaler = load_training_scaler(args.normalizer, args.column_wise, sub_idx)
+    normed = scaler.transform(raw)  # (lag, N, 1)
+    # shape to batch of one: [1, lag, N, 1]
+    X = normed[np.newaxis, ...]
 
     # model & checkpoint
     state_dict, _ = load_checkpoint_bundle(weights_path, torch.device("cpu"))
@@ -168,11 +209,13 @@ def run_inference(
 
     # inference
     with torch.no_grad():
-        X_tensor = torch.tensor(X, dtype=torch.float32, device=device)
+        X_tensor = torch.tensor(X, dtype=torch.float32, device=device)  # [1, lag, N, 1]
         y_pred = gen(X_tensor, norm_dis)  # [1, horizon, N, 1]
 
     # denormalize
-    y_pred_real = scaler.inverse_transform(y_pred.cpu()).squeeze(-1).squeeze(0)  # [H, N]
+    # Model was trained with real_value=True (for PEMS*), so outputs are already in real scale.
+    # Do NOT inverse-transform, or values will blow up.
+    y_pred_real = y_pred.cpu().squeeze(-1).squeeze(0)  # [H, N]
     y_pred_real = y_pred_real.permute(1, 0).numpy()  # [N, H]
 
     # build output CSV
@@ -193,7 +236,7 @@ def run_inference(
 # Optional convenience: run with hardcoded defaults matching user request
 if __name__ == "__main__":
     run_inference(
-        weights_path="log/PEMS04/20260211140509/best_model.pth",
-        input_csv_path="inference_testing/sub-graph.csv",
+        weights_path="/mnt/HDD/akashs/SCALE/TrendGCN/log/PEMS04/final-run-1/best_model.pth",
+        input_csv_path="/mnt/HDD/akashs/SCALE/TrendGCN/inference_testing/sub-graph-2.csv",
         node_list_txt_path="inference_testing/PEMSD4.txt",
     )
