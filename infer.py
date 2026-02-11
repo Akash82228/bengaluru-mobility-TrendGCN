@@ -1,29 +1,3 @@
-"""
-Minimal, self-contained inference helper for TrendGCN (PEMS04).
-
-Expose a single function:
-    run_inference(weights_path, input_csv_path, node_list_txt_path, output_csv_path=None)
-
-Inputs
-------
-- weights_path: path to trained checkpoint (e.g., log/PEMS04/20260211140509/best_model.pth)
-- input_csv_path: one-window traffic snapshot; rows = cameras, cols = 5 lag timesteps;
-                  first column is camera name/id, remaining 5 columns are traffic counts.
-- node_list_txt_path: full list of 103 camera names used in training (one per line).
-- output_csv_path: optional override; default writes alongside input as <stem>_pred.csv
-
-Behavior
---------
-- Automatically detects whether the input is full-graph or subgraph by matching camera names
-  to the training node list; slices model embeddings and LayerNorm params accordingly.
-- Normalizes the provided window with Standard (z-score) normalization (column_wise=False),
-  consistent with training config.
-- Runs inference with lag=5, horizon=5, and saves/returns a CSV shaped (V rows, 5 cols)
-  with predicted counts for the provided cameras (in input order), columns named H1..H5.
-
-Note: adjacency/dist matrices are unused for PEMS04; an identity is passed for shape only.
-"""
-
 import inspect
 import os
 from pathlib import Path
@@ -45,13 +19,13 @@ CFG = SimpleNamespace(
     num_nodes=103,
     lag=5,
     horizon=5,
-    normalizer="std",  # matches training config
+    normalizer="zscore",  # matches training config
     column_wise=False,
     default_graph=True,
     input_dim=1,
     output_dim=1,
     embed_dim=6,
-    rnn_units=64,
+    rnn_units=64,   
     num_layers=2,
     cheb_k=2,
     seed=10,
@@ -236,7 +210,7 @@ def run_inference(
 # Optional convenience: run with hardcoded defaults matching user request
 if __name__ == "__main__":
     run_inference(
-        weights_path="/mnt/HDD/akashs/SCALE/TrendGCN/log/PEMS04/final-run-1/best_model.pth",
-        input_csv_path="/mnt/HDD/akashs/SCALE/TrendGCN/inference_testing/sub-graph-2.csv",
+        weights_path="/mnt/HDD/akashs/SCALE/TrendGCN/log/PEMS04/final-run-2/best_model.pth",
+        input_csv_path="/mnt/HDD/akashs/SCALE/TrendGCN/inference_testing/sub-graph-1.csv",
         node_list_txt_path="inference_testing/PEMSD4.txt",
     )
